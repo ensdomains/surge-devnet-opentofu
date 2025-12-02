@@ -1,6 +1,6 @@
-# ens-surge-devnet
+# surge-devnet-opentofu
 
-[OpenTofu](https://opentofu.org/) recipes for getting Surge devnet (including RISC/SP0 provers) up and running on a machine.
+[OpenTofu](https://opentofu.org/) recipes for getting [Surge devnet](https://docs.surge.wtf/docs/guides/running-surge) (including RISC/SP0 provers) up and running on a machine.
 
 ## Pre-requisites:
 
@@ -32,6 +32,8 @@ Once done a `setup-tunnel.ssh` script (bash/zsh) will have been generated. You c
 ./setup-tunnel.ssh
 ```
 
+Now you can access the Surge devnet L1 and L2 endpoints, see [devnet docs](https://docs.surge.wtf/docs/guides/running-surge).
+
 ### Additonal CLI settings
 
 You can override other settings during `tofu apply`:
@@ -58,6 +60,10 @@ tofu apply \
   -auto-approve
 ```
 
+## Developer guide
+
+[Conventional commits](https://www.conventionalcommits.org/en/v1.0.0/) are enforced using [husky](https://www.npmjs.com/package/husky). Use `bun i` to set this up.
+
 ## License 
 
-MIT
+MIT - see [LICENSE.md](LICENSE.md)
