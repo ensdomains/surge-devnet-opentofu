@@ -57,12 +57,34 @@ locals {
     fi
     echo "Architecture check passed: $ARCH"
 
+    wait_for_docker() {
+      local max_attempts=30
+      local attempt=1
+      while [ $attempt -le $max_attempts ]; do
+        if ${local.sudo}docker info > /dev/null 2>&1; then
+          return 0
+        fi
+        sleep 1
+        attempt=$((attempt + 1))
+      done
+      echo "Docker failed to start"
+      return 1
+    }
+
+    docker_cmd() {
+      if [ "$(whoami)" = "root" ]; then
+        "$@"
+      else
+        sg docker -c "$*"
+      fi
+    }
+
     # Install dependencies
     ${local.sudo}apt-get update
     ${local.sudo}apt-get install -y curl jq git wget
 
     # Docker installation (idempotent)
-    if ! command -v docker > /dev/null 2>&1; then
+    if ! ${local.sudo}docker compose version > /dev/null 2>&1; then
       ${local.sudo}apt-get install -y ca-certificates curl
       ${local.sudo}install -m 0755 -d /etc/apt/keyrings
       ${local.sudo}curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
@@ -74,9 +96,17 @@ Components: stable
 Signed-By: /etc/apt/keyrings/docker.asc" | ${local.sudo}tee /etc/apt/sources.list.d/docker.sources > /dev/null
       ${local.sudo}apt-get update
       ${local.sudo}apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+      ${local.sudo}systemctl enable docker
+      ${local.sudo}systemctl start docker
+      if [ "$(whoami)" != "root" ]; then
+        ${local.sudo}usermod -aG docker $(whoami)
+      fi
+      wait_for_docker
     fi
-    ${local.sudo}systemctl enable docker
+
+    # Ensure Docker daemon is running
     ${local.sudo}systemctl start docker
+    wait_for_docker
 
     # CUDA 13.0.1 installation (conditional)
     if ! command -v nvcc > /dev/null 2>&1; then
@@ -100,6 +130,7 @@ Signed-By: /etc/apt/keyrings/docker.asc" | ${local.sudo}tee /etc/apt/sources.lis
       ${local.sudo}apt-get install -y nvidia-container-toolkit
       ${local.sudo}nvidia-ctk runtime configure --runtime=docker
       ${local.sudo}systemctl restart docker
+      wait_for_docker
     fi
 
     # Kurtosis installation (idempotent)
@@ -108,8 +139,10 @@ Signed-By: /etc/apt/keyrings/docker.asc" | ${local.sudo}tee /etc/apt/sources.lis
       ${local.sudo}apt-get update
       ${local.sudo}apt-get install -y kurtosis-cli
     fi
-    kurtosis analytics disable || true
-    echo "" | kurtosis engine start || true
+    docker_cmd kurtosis analytics disable || true
+    if ! docker_cmd kurtosis engine status 2>/dev/null | grep -q "RUNNING"; then
+      echo "" | docker_cmd kurtosis engine start || true
+    fi
 
     # UFW firewall setup
     ${local.sudo}apt-get install -y ufw
@@ -124,13 +157,14 @@ Signed-By: /etc/apt/keyrings/docker.asc" | ${local.sudo}tee /etc/apt/sources.lis
       git clone https://github.com/NethermindEth/surge-ethereum-package.git
     fi
     cd surge-ethereum-package
-    git pull
+    git fetch origin
+    git checkout 94043d085b3365a1fd0f3dd73246bcb826dc9dad
 
     # Check if devnet already exists
-    if kurtosis enclave ls 2>/dev/null | grep -q "surge-devnet"; then
+    if docker_cmd kurtosis enclave ls 2>/dev/null | grep -q "surge-devnet"; then
       if [ "${var.redeploy_devnet}" = "true" ]; then
         echo "Removing existing surge-devnet..."
-        ./remove-surge-devnet-l1.sh --force
+        docker_cmd ./remove-surge-devnet-l1.sh --force
       else
         echo "Surge devnet already exists. Skipping deployment."
         echo "Set redeploy_devnet=true to redeploy."
@@ -140,9 +174,33 @@ Signed-By: /etc/apt/keyrings/docker.asc" | ${local.sudo}tee /etc/apt/sources.lis
     fi
 
     # Deploy Surge L1
-    ./deploy-surge-devnet-l1.sh --environment remote --mode silence
+    docker_cmd ./deploy-surge-devnet-l1.sh --environment remote --mode silence
 
     echo "Surge devnet L1 deployment complete!"
+
+    # Clone simple-surge-node repo for L2 deployment
+    cd ${local.home_dir}
+    if [ ! -d simple-surge-node ]; then
+      git clone https://github.com/NethermindEth/simple-surge-node.git
+    fi
+    cd simple-surge-node
+    git fetch origin
+    git checkout 5171c3b6528ef686667ad088c90be3a6c8a2a871
+
+    # Clean up any existing L2 deployment
+    docker_cmd ./surge-remover.sh || true
+
+    # Deploy L2 protocol
+    DEPLOYER_OUTPUT=$(printf '\n\n\ntrue\n\n\n\ntrue\n' | docker_cmd ./surge-protocol-deployer.sh 2>&1) || true
+    echo "$DEPLOYER_OUTPUT"
+
+    # Verify expected output
+    if echo "$DEPLOYER_OUTPUT" | grep -q "RISC0_BLOCK_PROVING_IMAGE_ID is not set"; then
+      echo "L2 protocol deployer completed with expected output"
+    else
+      echo "ERROR: L2 protocol deployer did not produce expected output"
+      exit 1
+    fi
   EOT
 }
 
