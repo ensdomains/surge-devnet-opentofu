@@ -79,12 +79,27 @@ locals {
       fi
     }
 
+    remove_existing_docker() {
+      ${local.sudo}systemctl stop docker.socket docker.service containerd.service 2>/dev/null || true
+      ${local.sudo}apt-get remove -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin docker docker-engine docker.io containerd runc 2>/dev/null || true
+      ${local.sudo}apt-get purge -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin docker docker-engine docker.io containerd runc 2>/dev/null || true
+      ${local.sudo}apt-get autoremove -y 2>/dev/null || true
+      ${local.sudo}rm -rf /var/lib/docker /var/lib/containerd
+      ${local.sudo}rm -f /etc/apt/sources.list.d/docker.sources /etc/apt/sources.list.d/docker.list
+      ${local.sudo}rm -f /etc/apt/keyrings/docker.asc /etc/apt/keyrings/docker.gpg
+      ${local.sudo}apt-get update
+    }
+
     # Install dependencies
     ${local.sudo}apt-get update
     ${local.sudo}apt-get install -y curl jq git wget
 
-    # Docker installation (idempotent)
-    if ! ${local.sudo}docker compose version > /dev/null 2>&1; then
+    # Docker installation (with cleanup of broken installations)
+    if ! ${local.sudo}docker info > /dev/null 2>&1; then
+      if dpkg -l | grep -qE "docker-ce|docker\.io|docker-engine"; then
+        echo "Docker is installed but not working. Removing existing installation..."
+        remove_existing_docker
+      fi
       ${local.sudo}apt-get install -y ca-certificates curl
       ${local.sudo}install -m 0755 -d /etc/apt/keyrings
       ${local.sudo}curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
