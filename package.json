@@ -1,0 +1,17 @@
+{
+  "name": "surge-devnet-opentofu",
+  "private": true,
+  "type": "module",
+  "packageManager": "bun@1.2.2",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "prepare": "husky"
+  },
+  "devDependencies": {
+    "@commitlint/cli": "^20.1.0",
+    "@commitlint/config-conventional": "^20.0.0",
+    "husky": "^9.1.7"
+  }
+}
