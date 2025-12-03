@@ -28,6 +28,12 @@ variable "ssh_private_key_path" {
   default     = "~/.ssh/id_rsa"
 }
 
+variable "ssh_port" {
+  description = "SSH port"
+  type        = number
+  default     = 22
+}
+
 variable "redeploy_devnet" {
   description = "If true, remove and redeploy existing surge-devnet"
   type        = bool
@@ -71,6 +77,28 @@ locals {
       return 1
     }
 
+    apt_get() {
+      while ${local.sudo}fuser /var/lib/dpkg/lock-frontend > /dev/null 2>&1; do
+        echo "Waiting for apt lock..."
+        sleep 5
+      done
+      ${local.sudo}apt-get "$@"
+    }
+
+    has_systemd() {
+      [ -d /run/systemd/system ]
+    }
+
+    service_cmd() {
+      local action=$1
+      local service=$2
+      if has_systemd; then
+        ${local.sudo}systemctl $action $service
+      else
+        ${local.sudo}service $service $action 2>/dev/null || true
+      fi
+    }
+
     docker_cmd() {
       if [ "$(whoami)" = "root" ]; then
         "$@"
@@ -80,27 +108,29 @@ locals {
     }
 
     remove_existing_docker() {
-      ${local.sudo}systemctl stop docker.socket docker.service containerd.service 2>/dev/null || true
-      ${local.sudo}apt-get remove -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin docker docker-engine docker.io containerd runc 2>/dev/null || true
-      ${local.sudo}apt-get purge -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin docker docker-engine docker.io containerd runc 2>/dev/null || true
-      ${local.sudo}apt-get autoremove -y 2>/dev/null || true
+      service_cmd stop docker.socket 2>/dev/null || true
+      service_cmd stop docker 2>/dev/null || true
+      service_cmd stop containerd 2>/dev/null || true
+      apt_get remove -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin docker docker-engine docker.io containerd runc 2>/dev/null || true
+      apt_get purge -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin docker docker-engine docker.io containerd runc 2>/dev/null || true
+      apt_get autoremove -y 2>/dev/null || true
       ${local.sudo}rm -rf /var/lib/docker /var/lib/containerd
       ${local.sudo}rm -f /etc/apt/sources.list.d/docker.sources /etc/apt/sources.list.d/docker.list
       ${local.sudo}rm -f /etc/apt/keyrings/docker.asc /etc/apt/keyrings/docker.gpg
-      ${local.sudo}apt-get update
+      apt_get update
     }
 
     # Install dependencies
-    ${local.sudo}apt-get update
-    ${local.sudo}apt-get install -y curl jq git wget
+    apt_get update
+    apt_get install -y -f curl jq git wget
 
     # Docker installation (with cleanup of broken installations)
-    if ! ${local.sudo}docker info > /dev/null 2>&1; then
+    if ! ${local.sudo}docker compose version > /dev/null 2>&1; then
       if dpkg -l | grep -qE "docker-ce|docker\.io|docker-engine"; then
         echo "Docker is installed but not working. Removing existing installation..."
         remove_existing_docker
       fi
-      ${local.sudo}apt-get install -y ca-certificates curl
+      apt_get install -y ca-certificates curl
       ${local.sudo}install -m 0755 -d /etc/apt/keyrings
       ${local.sudo}curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
       ${local.sudo}chmod a+r /etc/apt/keyrings/docker.asc
@@ -109,10 +139,12 @@ URIs: https://download.docker.com/linux/ubuntu
 Suites: $(. /etc/os-release && echo "$${UBUNTU_CODENAME:-$$VERSION_CODENAME}")
 Components: stable
 Signed-By: /etc/apt/keyrings/docker.asc" | ${local.sudo}tee /etc/apt/sources.list.d/docker.sources > /dev/null
-      ${local.sudo}apt-get update
-      ${local.sudo}apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
-      ${local.sudo}systemctl enable docker
-      ${local.sudo}systemctl start docker
+      apt_get update
+      apt_get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+      if has_systemd; then
+        ${local.sudo}systemctl enable docker
+      fi
+      service_cmd start docker
       if [ "$(whoami)" != "root" ]; then
         ${local.sudo}usermod -aG docker $(whoami)
       fi
@@ -120,7 +152,7 @@ Signed-By: /etc/apt/keyrings/docker.asc" | ${local.sudo}tee /etc/apt/sources.lis
     fi
 
     # Ensure Docker daemon is running
-    ${local.sudo}systemctl start docker
+    service_cmd start docker
     wait_for_docker
 
     # CUDA 13.0.1 installation (conditional)
@@ -141,18 +173,18 @@ Signed-By: /etc/apt/keyrings/docker.asc" | ${local.sudo}tee /etc/apt/sources.lis
       curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list | \
         sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' | \
         ${local.sudo}tee /etc/apt/sources.list.d/nvidia-container-toolkit.list
-      ${local.sudo}apt-get update
-      ${local.sudo}apt-get install -y nvidia-container-toolkit
-      ${local.sudo}nvidia-ctk runtime configure --runtime=docker
-      ${local.sudo}systemctl restart docker
-      wait_for_docker
+      apt_get update
+      apt_get install -y nvidia-container-toolkit
     fi
+    ${local.sudo}nvidia-ctk runtime configure --runtime=docker
+    service_cmd restart docker
+    wait_for_docker
 
     # Kurtosis installation (idempotent)
     if ! command -v kurtosis > /dev/null 2>&1; then
       echo 'deb [trusted=yes] https://apt.fury.io/kurtosis-tech/ /' | ${local.sudo}tee /etc/apt/sources.list.d/kurtosis.list
-      ${local.sudo}apt-get update
-      ${local.sudo}apt-get install -y kurtosis-cli
+      apt_get update
+      apt_get install -y kurtosis-cli
     fi
     docker_cmd kurtosis analytics disable || true
     if ! docker_cmd kurtosis engine status 2>/dev/null | grep -q "RUNNING"; then
@@ -160,11 +192,17 @@ Signed-By: /etc/apt/keyrings/docker.asc" | ${local.sudo}tee /etc/apt/sources.lis
     fi
 
     # UFW firewall setup
-    ${local.sudo}apt-get install -y ufw
+    apt_get install -y ufw
     ${local.sudo}ufw default deny incoming
     ${local.sudo}ufw default allow outgoing
     ${local.sudo}ufw allow ssh
     echo "y" | ${local.sudo}ufw enable
+
+    # Configure SSH for extensive port forwarding
+    if ! grep -q "^MaxSessions 100" /etc/ssh/sshd_config; then
+      echo "MaxSessions 100" | ${local.sudo}tee -a /etc/ssh/sshd_config
+      service_cmd restart sshd
+    fi
 
     # Clone Surge repo
     cd ${local.home_dir}
@@ -192,6 +230,17 @@ Signed-By: /etc/apt/keyrings/docker.asc" | ${local.sudo}tee /etc/apt/sources.lis
     docker_cmd ./deploy-surge-devnet-l1.sh --environment remote --mode silence
 
     echo "Surge devnet L1 deployment complete!"
+
+    # Setup Bonsai Bento
+    cd ${local.home_dir}
+    if [ ! -d risc0-bento ]; then
+      git clone https://github.com/NethermindEth/risc0-bento.git
+    fi
+    cd risc0-bento
+    git fetch origin
+    git checkout main
+    cp bento/dockerfiles/sample.env ./sample.env
+    docker_cmd docker compose --file compose.yml --env-file sample.env up -d --build
 
     # Clone simple-surge-node repo for L2 deployment
     cd ${local.home_dir}
@@ -228,6 +277,7 @@ resource "null_resource" "surge_devnet_l1" {
     type        = "ssh"
     user        = var.ssh_user
     host        = var.server_ip
+    port        = var.ssh_port
     private_key = file(pathexpand(var.ssh_private_key_path))
   }
 
@@ -236,27 +286,29 @@ resource "null_resource" "surge_devnet_l1" {
   }
 }
 
-resource "local_file" "setup_tunnel" {
-  filename        = "${path.module}/setup-tunnel.sh"
+resource "local_file" "ssh" {
+  filename        = "${path.module}/ssh.sh"
   file_permission = "0755"
   content         = <<-EOT
     #!/bin/bash
-    # SSH tunnel for Surge devnet endpoints
-    # Generated by OpenTofu - Run this to access devnet from your local machine
-
-    echo "Starting SSH tunnel to ${var.server_ip}..."
-    echo "Forwarding ports: 32003, 32004, 33001, 36005, 36000"
-    echo "Press Ctrl+C to stop"
-    echo ""
-
-    ssh -N \
-      -L 32003:localhost:32003 \
-      -L 32004:localhost:32004 \
-      -L 33001:localhost:33001 \
-      -L 36005:localhost:36005 \
-      -L 36000:localhost:36000 \
-      -i ${var.ssh_private_key_path} \
-      ${var.ssh_user}@${var.server_ip}
+    if [ "$1" = "--tunnel" ]; then
+      echo "Starting SSH tunnel to ${var.server_ip}..."
+      echo "Forwarding ports: 32003, 32004, 33001, 36005, 36000"
+      echo "Press Ctrl+C to stop"
+      ssh -N \
+        -p ${var.ssh_port} \
+        -L 32003:localhost:32003 \
+        -L 32004:localhost:32004 \
+        -L 33001:localhost:33001 \
+        -L 36005:localhost:36005 \
+        -L 36000:localhost:36000 \
+        -i ${var.ssh_private_key_path} \
+        ${var.ssh_user}@${var.server_ip}
+    else
+      ssh -p ${var.ssh_port} \
+        -i ${var.ssh_private_key_path} \
+        ${var.ssh_user}@${var.server_ip}
+    fi
   EOT
 }
 
@@ -271,7 +323,7 @@ output "surge_endpoints" {
   }
 }
 
-output "tunnel_script" {
-  description = "Run this script to create SSH tunnel for local access"
-  value       = "./setup-tunnel.sh"
+output "ssh_script" {
+  description = "SSH to server (use --tunnel for port forwarding)"
+  value       = "./ssh.sh"
 }
