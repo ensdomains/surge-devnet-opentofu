@@ -240,6 +240,7 @@ Signed-By: /etc/apt/keyrings/docker.asc" | ${local.sudo}tee /etc/apt/sources.lis
     git fetch origin
     git checkout main
     cp bento/dockerfiles/sample.env ./sample.env
+    ${local.sudo}fuser -k 8081/tcp 2>/dev/null || true
     docker_cmd docker compose --file compose.yml --env-file sample.env up -d --build
 
     # Clone simple-surge-node repo for L2 deployment
@@ -269,6 +270,8 @@ Signed-By: /etc/apt/keyrings/docker.asc" | ${local.sudo}tee /etc/apt/sources.lis
 }
 
 resource "null_resource" "surge_devnet_l1" {
+  depends_on = [local_file.ssh]
+
   triggers = {
     server_ip = var.server_ip
   }
@@ -296,6 +299,7 @@ resource "local_file" "ssh" {
       echo "Forwarding ports: 32003, 32004, 33001, 36005, 36000"
       echo "Press Ctrl+C to stop"
       ssh -N \
+        -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
         -p ${var.ssh_port} \
         -L 32003:localhost:32003 \
         -L 32004:localhost:32004 \
@@ -305,7 +309,8 @@ resource "local_file" "ssh" {
         -i ${var.ssh_private_key_path} \
         ${var.ssh_user}@${var.server_ip}
     else
-      ssh -p ${var.ssh_port} \
+      ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+        -p ${var.ssh_port} \
         -i ${var.ssh_private_key_path} \
         ${var.ssh_user}@${var.server_ip}
     fi
