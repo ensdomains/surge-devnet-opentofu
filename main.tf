@@ -240,7 +240,8 @@ Signed-By: /etc/apt/keyrings/docker.asc" | ${local.sudo}tee /etc/apt/sources.lis
     git fetch origin
     git checkout main
     cp bento/dockerfiles/sample.env ./sample.env
-    ${local.sudo}fuser -k 8081/tcp 2>/dev/null || true
+    sed -i 's/8081:8081/58081:8081/g' compose.yml
+    ${local.sudo}fuser -k 58081/tcp 2>/dev/null || true
     docker_cmd docker compose --file compose.yml --env-file sample.env up -d --build
 
     # Clone simple-surge-node repo for L2 deployment
