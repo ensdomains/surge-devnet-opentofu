@@ -267,6 +267,39 @@ Signed-By: /etc/apt/keyrings/docker.asc" | ${local.sudo}tee /etc/apt/sources.lis
       echo "ERROR: L2 protocol deployer did not produce expected output"
       exit 1
     fi
+
+    # Extract verifier addresses from L2 deployment
+    RISC0_GROTH16_VERIFIER=$(cat ${local.home_dir}/simple-surge-node/deployment/deploy_l1.json | jq -r '.risc0_groth16_verifier')
+    SP1_RETH_VERIFIER=$(cat ${local.home_dir}/simple-surge-node/deployment/deploy_l1.json | jq -r '.sp1_reth_verifier')
+    echo "Extracted RISC0_GROTH16_VERIFIER: $RISC0_GROTH16_VERIFIER"
+    echo "Extracted SP1_RETH_VERIFIER: $SP1_RETH_VERIFIER"
+
+    # Clone raiko repository
+    cd ${local.home_dir}
+    if [ ! -d raiko ]; then
+      git clone https://github.com/NethermindEth/raiko.git
+    fi
+    cd raiko
+    git fetch origin
+
+    # Copy chain spec config from simple-surge-node to raiko
+    mkdir -p host/config/devnet
+    cp ${local.home_dir}/simple-surge-node/configs/chain_spec_list_default.json host/config/devnet/chain_spec_list.json
+
+    # Setup raiko docker environment
+    cp docker/.env.sample.zk docker/.env
+
+    # Configure environment variables in raiko's .env
+    sed -i "s|^BONSAI_API_URL=.*|BONSAI_API_URL=http://localhost:58081|" docker/.env
+    sed -i "s|^SP1_VERIFIER_ADDRESS=.*|SP1_VERIFIER_ADDRESS=$SP1_RETH_VERIFIER|" docker/.env
+    sed -i "s|^GROTH16_VERIFIER_ADDRESS=.*|GROTH16_VERIFIER_ADDRESS=$RISC0_GROTH16_VERIFIER|" docker/.env
+
+    # Add variables if they don't exist
+    grep -q "^BONSAI_API_URL=" docker/.env || echo "BONSAI_API_URL=http://localhost:58081" >> docker/.env
+    grep -q "^SP1_VERIFIER_ADDRESS=" docker/.env || echo "SP1_VERIFIER_ADDRESS=$SP1_RETH_VERIFIER" >> docker/.env
+    grep -q "^GROTH16_VERIFIER_ADDRESS=" docker/.env || echo "GROTH16_VERIFIER_ADDRESS=$RISC0_GROTH16_VERIFIER" >> docker/.env
+
+    echo "Raiko setup complete!"
   EOT
 }
 
