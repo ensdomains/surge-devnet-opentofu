@@ -26,10 +26,16 @@ Execute:
 tofu apply -var="server_ip=<ip address of your server>" -auto-approve
 ````
 
-Once done a `setup-tunnel.ssh` script (bash/zsh) will have been generated. You can run this to setup an SSH tunnel to all of the devnet endpoints on the server from your local machine:
+When you run this a `ssh.sh` script (bash/zsh) will have been generated. You can use to connect to the server as `root`:
 
 ```bash
-./setup-tunnel.ssh
+./ssh.sh
+```
+
+To connect and setup a port-forwarding tunnel to all the endpoints of the devnet use `--tunnel`:
+
+```bash
+./ssh.sh --tunnel
 ```
 
 Now you can access the Surge devnet L1 and L2 endpoints, see [devnet docs](https://docs.surge.wtf/docs/guides/running-surge).

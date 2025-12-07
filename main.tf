@@ -122,7 +122,7 @@ locals {
 
     # Install dependencies
     apt_get update
-    apt_get install -y -f curl jq git wget
+    apt_get install -y -f curl jq git wget net-tools
 
     # Docker installation (with cleanup of broken installations)
     if ! ${local.sudo}docker compose version > /dev/null 2>&1; then
@@ -247,7 +247,7 @@ Signed-By: /etc/apt/keyrings/docker.asc" | ${local.sudo}tee /etc/apt/sources.lis
     # Clone simple-surge-node repo for L2 deployment
     cd ${local.home_dir}
     if [ ! -d simple-surge-node ]; then
-      git clone https://github.com/NethermindEth/simple-surge-node.git
+      git clone https://github.com/ensdomains/simple-surge-node.git
     fi
     cd simple-surge-node
     git fetch origin
@@ -255,6 +255,10 @@ Signed-By: /etc/apt/keyrings/docker.asc" | ${local.sudo}tee /etc/apt/sources.lis
 
     # Clean up any existing L2 deployment
     docker_cmd ./surge-remover.sh || true
+
+    # Setup environment configuration
+    cp .env.devnet .env
+    # sed -i 's/^POSTGRES_PORT=.*/POSTGRES_PORT=55432/' .env
 
     # Deploy L2 protocol
     DEPLOYER_OUTPUT=$(printf '\n\n\ntrue\n\n\n\ntrue\n' | docker_cmd ./surge-protocol-deployer.sh 2>&1) || true
@@ -275,12 +279,14 @@ Signed-By: /etc/apt/keyrings/docker.asc" | ${local.sudo}tee /etc/apt/sources.lis
     echo "Extracted SP1_RETH_VERIFIER: $SP1_RETH_VERIFIER"
 
     # Clone raiko repository
+    RAIKO_TAG="v25.1.0-surge"
     cd ${local.home_dir}
     if [ ! -d raiko ]; then
       git clone https://github.com/NethermindEth/raiko.git
     fi
     cd raiko
     git fetch origin
+    git checkout $RAIKO_TAG
 
     # Copy chain spec config from simple-surge-node to raiko
     mkdir -p host/config/devnet
@@ -300,6 +306,25 @@ Signed-By: /etc/apt/keyrings/docker.asc" | ${local.sudo}tee /etc/apt/sources.lis
     grep -q "^GROTH16_VERIFIER_ADDRESS=" docker/.env || echo "GROTH16_VERIFIER_ADDRESS=$RISC0_GROTH16_VERIFIER" >> docker/.env
 
     echo "Raiko setup complete!"
+
+    # Update raiko docker image tag (still in raiko directory from previous steps)
+    sed -i "s/:latest/:$RAIKO_TAG/g" docker/docker-compose-zk.yml
+
+    # Start raiko docker containers
+    cd docker
+    docker_cmd docker compose -f docker-compose-zk.yml up -d --force-recreate
+
+    echo "Raiko containers started!"
+
+    # Re-run surge-protocol-deployer with raiko endpoints
+    cd ${local.home_dir}/simple-surge-node
+    DEPLOYER_OUTPUT2=$(printf '\n\n\ntrue\n\n\nhttp://127.0.0.1:8080\nhttp://127.0.0.1:8080\n\n\n' | docker_cmd ./surge-protocol-deployer.sh 2>&1) || true
+    echo "$DEPLOYER_OUTPUT2"
+
+    # Deploy L2 stack
+    printf '\n\n5\n\n' | docker_cmd ./surge-stack-deployer.sh
+
+    echo "L2 stack deployment complete!"
   EOT
 }
 
@@ -330,16 +355,22 @@ resource "local_file" "ssh" {
     #!/bin/bash
     if [ "$1" = "--tunnel" ]; then
       echo "Starting SSH tunnel to ${var.server_ip}..."
-      echo "Forwarding ports: 32003, 32004, 33001, 36005, 36000"
+      echo "Forwarding ports: 32003, 32004, 33001, 36005, 36000, 3001, 3002, 4102, 4103"
       echo "Press Ctrl+C to stop"
       ssh -N \
         -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
         -p ${var.ssh_port} \
+        -L 8547:localhost:8547 \
         -L 32003:localhost:32003 \
         -L 32004:localhost:32004 \
         -L 33001:localhost:33001 \
         -L 36005:localhost:36005 \
         -L 36000:localhost:36000 \
+        -L 3001:localhost:3001 \
+        -L 3002:localhost:3002 \
+        -L 4000:localhost:4000 \
+        -L 4102:localhost:4102 \
+        -L 4103:localhost:4103 \
         -i ${var.ssh_private_key_path} \
         ${var.ssh_user}@${var.server_ip}
     else
@@ -354,10 +385,15 @@ resource "local_file" "ssh" {
 output "surge_endpoints" {
   description = "Surge devnet L1 service endpoints (access via SSH tunnel)"
   value = {
+    l1_rpc              = "http://localhost:8547"
     execution_rpc       = "http://localhost:32003"
     execution_ws        = "ws://localhost:32004"
     consensus_api       = "http://localhost:33001"
-    block_explorer      = "http://localhost:36005"
+    l1_block_explorer   = "http://localhost:36005"
+    l2_block_explorer   = "http://localhost:3001"
+    bridge_ui           = "http://localhost:3002"
+    l1_relayer          = "http://localhost:4102"
+    l2_relayer          = "http://localhost:4103"
     transaction_spammer = "http://localhost:36000"
   }
 }
