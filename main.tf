@@ -258,7 +258,7 @@ Signed-By: /etc/apt/keyrings/docker.asc" | ${local.sudo}tee /etc/apt/sources.lis
 
     # Setup environment configuration
     cp .env.devnet .env
-    # sed -i 's/^POSTGRES_PORT=.*/POSTGRES_PORT=55432/' .env
+    sed -i 's/^POSTGRES_PORT=.*/POSTGRES_PORT=55432/' .env
 
     # Deploy L2 protocol
     DEPLOYER_OUTPUT=$(printf '\n\n\ntrue\n\n\n\ntrue\n' | docker_cmd ./surge-protocol-deployer.sh 2>&1) || true
@@ -345,6 +345,25 @@ resource "null_resource" "surge_devnet_l1" {
 
   provisioner "remote-exec" {
     inline = [local.setup_script]
+  }
+}
+
+resource "null_resource" "extract_chain_data" {
+  depends_on = [null_resource.surge_devnet_l1]
+
+  triggers = {
+    server_ip = var.server_ip
+  }
+
+  provisioner "local-exec" {
+    command = <<-EOT
+      ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+        -p ${var.ssh_port} \
+        -i ${var.ssh_private_key_path} \
+        ${var.ssh_user}@${var.server_ip} \
+        'source ${local.home_dir}/simple-surge-node/.env && echo "{\"l1Bridge\": \"$BRIDGE\", \"l2Bridge\": \"$L2_BRIDGE\", \"privateKey\": \"$PRIVATE_KEY\"}"' \
+        > ${path.module}/chaindata.json
+    EOT
   }
 }
 
