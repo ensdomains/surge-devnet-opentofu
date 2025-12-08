@@ -156,23 +156,28 @@ export interface SendBridgeMessageOptions {
 export async function sendBridgeMessage(
   options: SendBridgeMessageOptions
 ): Promise<`0x${string}`> {
-  const l1PublicClient = createL1PublicClient();
-  const l1WalletClient = createL1WalletClient();
-  const [ownerAddress] = await l1WalletClient.getAddresses();
+  const isL1 = CURRENT_CHAIN === "l1";
+  const bridgeAddress = isL1 ? L1_BRIDGE_ADDRESS : L2_BRIDGE_ADDRESS;
+  const srcChain = isL1 ? L1_CHAIN : L2_CHAIN;
+  const destChain = isL1 ? L2_CHAIN : L1_CHAIN;
+
+  const publicClient = getPublicClient();
+  const walletClient = getWalletClient();
+  const [ownerAddress] = await walletClient.getAddresses();
 
   const {
     to,
     value = 0n,
     data = "0x" as `0x${string}`,
-    destChainId = BigInt(L2_CHAIN.id),
+    destChainId = BigInt(destChain.id),
     srcOwner = ownerAddress,
     destOwner = ownerAddress,
   } = options;
 
   const dataLength = data.length;
 
-  const minGasLimit = (await l1PublicClient.readContract({
-    address: L1_BRIDGE_ADDRESS,
+  const minGasLimit = (await publicClient.readContract({
+    address: bridgeAddress,
     abi: BridgeABI.abi,
     functionName: "getMessageMinGasLimit",
     args: [BigInt(dataLength)],
@@ -185,7 +190,7 @@ export async function sendBridgeMessage(
     fee: 0n,
     gasLimit: minGasLimitWithBuffer,
     from: ownerAddress,
-    srcChainId: BigInt(L1_CHAIN.id),
+    srcChainId: BigInt(srcChain.id),
     srcOwner,
     destChainId,
     destOwner,
@@ -196,8 +201,8 @@ export async function sendBridgeMessage(
 
   const totalValue = value + message.fee;
 
-  const estimatedGas = await l1PublicClient.estimateContractGas({
-    address: L1_BRIDGE_ADDRESS,
+  const estimatedGas = await publicClient.estimateContractGas({
+    address: bridgeAddress,
     abi: BridgeABI.abi,
     functionName: "sendMessage",
     args: [message],
@@ -205,15 +210,15 @@ export async function sendBridgeMessage(
     account: ownerAddress,
   });
 
-  const txHash = await l1WalletClient.writeContract({
-    address: L1_BRIDGE_ADDRESS,
+  const txHash = await walletClient.writeContract({
+    address: bridgeAddress,
     abi: BridgeABI.abi,
     functionName: "sendMessage",
     args: [message],
     value: totalValue,
     gas: estimatedGas + minGasLimitWithBuffer,
     chain: undefined,
-    account: l1WalletClient.account!,
+    account: walletClient.account!,
   });
 
   return txHash;
@@ -222,14 +227,15 @@ export async function sendBridgeMessage(
 export async function waitForBridgeMessageHash(
   txHash: `0x${string}`
 ): Promise<`0x${string}`> {
-  const l1PublicClient = createL1PublicClient();
+  const bridgeAddress = CURRENT_CHAIN === "l1" ? L1_BRIDGE_ADDRESS : L2_BRIDGE_ADDRESS;
+  const publicClient = getPublicClient();
 
-  const receipt = await l1PublicClient.waitForTransactionReceipt({
+  const receipt = await publicClient.waitForTransactionReceipt({
     hash: txHash,
   });
 
-  const logs = await l1PublicClient.getContractEvents({
-    address: L1_BRIDGE_ADDRESS,
+  const logs = await publicClient.getContractEvents({
+    address: bridgeAddress,
     abi: BridgeABI.abi,
     eventName: "MessageSent",
     fromBlock: receipt.blockNumber,
@@ -254,11 +260,13 @@ export interface WaitForMessageOptions {
   pollInterval?: number;
 }
 
-export async function waitForMessageProcessedOnL2(
+export async function waitForMessageProcessed(
   msgHash: `0x${string}`,
   options?: WaitForMessageOptions
 ): Promise<void> {
-  const l2PublicClient = createL2PublicClient();
+  const isL1Source = CURRENT_CHAIN === "l1";
+  const destBridgeAddress = isL1Source ? L2_BRIDGE_ADDRESS : L1_BRIDGE_ADDRESS;
+  const destPublicClient = isL1Source ? createL2PublicClient() : createL1PublicClient();
 
   const { maxAttempts = 120, pollInterval = 5000 } = options || {};
 
@@ -268,8 +276,8 @@ export async function waitForMessageProcessedOnL2(
   while (status === 0 && attempts < maxAttempts) {
     attempts++;
 
-    status = (await l2PublicClient.readContract({
-      address: L2_BRIDGE_ADDRESS,
+    status = (await destPublicClient.readContract({
+      address: destBridgeAddress,
       abi: BridgeABI.abi,
       functionName: "messageStatus",
       args: [msgHash],

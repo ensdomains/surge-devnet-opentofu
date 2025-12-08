@@ -8,7 +8,7 @@ import {
   createL2WalletClient,
   sendBridgeMessage,
   waitForBridgeMessageHash,
-  waitForMessageProcessedOnL2,
+  waitForMessageProcessed,
 } from "./common.js";
 import { encodeFunctionData, parseAbi } from "viem";
 import * as fs from "fs";
@@ -146,7 +146,7 @@ async function waitForL2Processing(msgHash: `0x${string}`) {
   console.log("Status codes: 0=NEW, 1=RETRIABLE, 2=DONE, 3=FAILED, 4=RECALLED");
   console.log("");
 
-  await waitForMessageProcessedOnL2(msgHash);
+  await waitForMessageProcessed(msgHash);
 
   console.log("");
   console.log("Message processed successfully on L2!");

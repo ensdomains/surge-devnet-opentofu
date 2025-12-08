@@ -1,24 +1,31 @@
 import {
   L1_BRIDGE_ADDRESS,
+  L2_BRIDGE_ADDRESS,
+  L1_CHAIN,
   L2_CHAIN,
-  createL1PublicClient,
+  CURRENT_CHAIN,
+  getPublicClient,
   BridgeABI,
 } from "./common.js";
 
 async function queryBridge() {
-  const publicClient = createL1PublicClient();
+  const isL1 = CURRENT_CHAIN === "l1";
+  const bridgeAddress = isL1 ? L1_BRIDGE_ADDRESS : L2_BRIDGE_ADDRESS;
+  const destChain = isL1 ? L2_CHAIN : L1_CHAIN;
 
-  console.log("Querying Bridge contract...");
-  console.log("Bridge address:", L1_BRIDGE_ADDRESS);
-  console.log("Chain ID to check:", L2_CHAIN.id);
+  const publicClient = getPublicClient();
+
+  console.log(`Querying ${CURRENT_CHAIN.toUpperCase()} Bridge contract...`);
+  console.log("Bridge address:", bridgeAddress);
+  console.log("Destination chain ID:", destChain.id);
   console.log("");
 
   try {
     const result = await publicClient.readContract({
-      address: L1_BRIDGE_ADDRESS,
+      address: bridgeAddress,
       abi: BridgeABI.abi,
       functionName: "isDestChainEnabled",
-      args: [BigInt(L2_CHAIN.id)],
+      args: [BigInt(destChain.id)],
     });
 
     const [enabled, destBridge] = result as [boolean, `0x${string}`];
