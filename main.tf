@@ -240,7 +240,7 @@ Signed-By: /etc/apt/keyrings/docker.asc" | ${local.sudo}tee /etc/apt/sources.lis
     git fetch origin
     git checkout main
     cp bento/dockerfiles/sample.env ./sample.env
-    sed -i 's/8081:8081/58081:8081/g' compose.yml
+    sed -i 's/[0-9]*8081:8081/58081:8081/g' compose.yml
     ${local.sudo}fuser -k 58081/tcp 2>/dev/null || true
     docker_cmd docker compose --file compose.yml --env-file sample.env up -d --build
 
@@ -325,6 +325,9 @@ Signed-By: /etc/apt/keyrings/docker.asc" | ${local.sudo}tee /etc/apt/sources.lis
     printf '\n\n5\n\n' | docker_cmd ./surge-stack-deployer.sh
 
     echo "L2 stack deployment complete!"
+
+    # Mark stack deployment as complete for chain data extraction
+    touch ${local.home_dir}/.surge-stack-complete
   EOT
 }
 
@@ -361,7 +364,7 @@ resource "null_resource" "extract_chain_data" {
         -p ${var.ssh_port} \
         -i ${var.ssh_private_key_path} \
         ${var.ssh_user}@${var.server_ip} \
-        'source ${local.home_dir}/simple-surge-node/.env && echo "{\"l1Bridge\": \"$BRIDGE\", \"l2Bridge\": \"$L2_BRIDGE\", \"privateKey\": \"$PRIVATE_KEY\"}"' \
+        'if [ -f ${local.home_dir}/.surge-stack-complete ]; then source ${local.home_dir}/simple-surge-node/.env && echo "{\"l1Bridge\": \"$BRIDGE\", \"l2Bridge\": \"$L2_BRIDGE\", \"privateKey\": \"$PRIVATE_KEY\"}"; else echo "{}"; fi' \
         > ${path.module}/chaindata.json
     EOT
   }
