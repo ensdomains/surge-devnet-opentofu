@@ -4,3 +4,5 @@ setup-tunnel.sh
 node_modules/
 ssh.sh
 chaindata.json
+out/
+cache/
