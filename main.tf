@@ -44,9 +44,26 @@ locals {
   sudo     = var.ssh_user != "root" ? "sudo " : ""
   home_dir = var.ssh_user == "root" ? "/root" : "/home/${var.ssh_user}"
 
+  # Smart contract verifier solidity compiler URLs
+  solidity_list_url     = "https://binaries.soliditylang.org/linux-amd64/list.json"
+  era_solidity_list_url = "https://raw.githubusercontent.com/blockscout/solc-bin/main/era-solidity.linux-amd64.list.json"
+  zksolc_list_url       = "https://raw.githubusercontent.com/blockscout/solc-bin/main/zksolc.linux-amd64.list.json"
+
   setup_script = <<-EOT
     set -e
     export DEBIAN_FRONTEND=noninteractive
+
+    # Verify passwordless sudo for non-root users
+    if [ "$(whoami)" != "root" ]; then
+      if ! sudo -n true 2>/dev/null; then
+        echo "Error: User $(whoami) requires passwordless sudo access."
+        echo "Run on the remote server:"
+        echo "  echo '$(whoami) ALL=(ALL) NOPASSWD: ALL' | sudo tee /etc/sudoers.d/$(whoami)"
+        echo "  sudo chmod 440 /etc/sudoers.d/$(whoami)"
+        exit 1
+      fi
+      echo "Passwordless sudo check passed"
+    fi
 
     # OS check
     if [ ! -f /etc/os-release ] || ! grep -q "^ID=ubuntu" /etc/os-release; then
@@ -99,14 +116,6 @@ locals {
       fi
     }
 
-    docker_cmd() {
-      if [ "$(whoami)" = "root" ]; then
-        "$@"
-      else
-        sg docker -c "$*"
-      fi
-    }
-
     remove_existing_docker() {
       service_cmd stop docker.socket 2>/dev/null || true
       service_cmd stop docker 2>/dev/null || true
@@ -122,7 +131,7 @@ locals {
 
     # Install dependencies
     apt_get update
-    apt_get install -y -f curl jq git wget net-tools
+    apt_get install -y -f curl jq git wget net-tools build-essential
 
     # Docker installation (with cleanup of broken installations)
     if ! ${local.sudo}docker compose version > /dev/null 2>&1; then
@@ -151,34 +160,48 @@ Signed-By: /etc/apt/keyrings/docker.asc" | ${local.sudo}tee /etc/apt/sources.lis
       wait_for_docker
     fi
 
+
     # Ensure Docker daemon is running
+    echo "Starting Docker daemon..."
     service_cmd start docker
+    echo "Waiting for Docker daemon to start..."
     wait_for_docker
+    echo "Docker daemon started!"
 
     # CUDA 13.0.1 installation (conditional)
-    if ! command -v nvcc > /dev/null 2>&1; then
-      cd /tmp
+    if [ ! -x /usr/local/cuda/bin/nvcc ]; then
+      echo "Installing CUDA 13.0.1..."
+      rm -rf /tmp/cuda
+      mkdir -p /tmp/cuda
+      cd /tmp/cuda
       wget -q https://developer.download.nvidia.com/compute/cuda/13.0.1/local_installers/cuda_13.0.1_580.82.07_linux.run
       ${local.sudo}sh cuda_13.0.1_580.82.07_linux.run --silent --toolkit
-      rm cuda_13.0.1_580.82.07_linux.run
+      rm -rf /tmp/cuda
+      echo "CUDA 13.0.1 installed!"
     fi
-    grep -qxF 'export PATH="/usr/local/cuda/bin:$PATH"' ${local.home_dir}/.bashrc || echo 'export PATH="/usr/local/cuda/bin:$PATH"' >> ${local.home_dir}/.bashrc
-    grep -qxF 'export LD_LIBRARY_PATH="/usr/local/cuda/lib64:$LD_LIBRARY_PATH"' ${local.home_dir}/.bashrc || echo 'export LD_LIBRARY_PATH="/usr/local/cuda/lib64:$LD_LIBRARY_PATH"' >> ${local.home_dir}/.bashrc
+    grep -qxF 'export PATH="/usr/local/cuda/bin:$PATH"' ${local.home_dir}/.profile || echo 'export PATH="/usr/local/cuda/bin:$PATH"' >> ${local.home_dir}/.profile
+    grep -qxF 'export LD_LIBRARY_PATH="/usr/local/cuda/lib64:$LD_LIBRARY_PATH"' ${local.home_dir}/.profile || echo 'export LD_LIBRARY_PATH="/usr/local/cuda/lib64:$LD_LIBRARY_PATH"' >> ${local.home_dir}/.profile
     export PATH="/usr/local/cuda/bin:$PATH"
     export LD_LIBRARY_PATH="/usr/local/cuda/lib64:$LD_LIBRARY_PATH"
 
     # NVIDIA Container Toolkit (for Docker GPU support)
-    if ! dpkg -l | grep -q nvidia-container-toolkit; then
+    if ! dpkg -l | grep -q nvidia-container-toolkit; then\
+      echo "Installing NVIDIA Container Toolkit..."
       curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | ${local.sudo}gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
       curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list | \
         sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' | \
         ${local.sudo}tee /etc/apt/sources.list.d/nvidia-container-toolkit.list
       apt_get update
       apt_get install -y nvidia-container-toolkit
+      echo "NVIDIA Container Toolkit installed!"
     fi
     ${local.sudo}nvidia-ctk runtime configure --runtime=docker
+
+    echo "Restarting Docker daemon..."  
     service_cmd restart docker
+    echo "Waiting for Docker daemon to restart..."
     wait_for_docker
+    echo "Docker daemon restarted!"
 
     # Kurtosis installation (idempotent)
     if ! command -v kurtosis > /dev/null 2>&1; then
@@ -186,38 +209,52 @@ Signed-By: /etc/apt/keyrings/docker.asc" | ${local.sudo}tee /etc/apt/sources.lis
       apt_get update
       apt_get install -y kurtosis-cli
     fi
-    docker_cmd kurtosis analytics disable || true
-    if ! docker_cmd kurtosis engine status 2>/dev/null | grep -q "RUNNING"; then
-      echo "" | docker_cmd kurtosis engine start || true
+    ${local.sudo}kurtosis analytics disable || true
+    if ! ${local.sudo}kurtosis engine status 2>/dev/null | grep -q "RUNNING"; then
+      echo "Starting Kurtosis engine..."
+      sleep 5
+      echo "" | ${local.sudo}kurtosis engine start || true
+      echo "Kurtosis engine started!"
     fi
 
     # UFW firewall setup
+    echo "Installing UFW..."
     apt_get install -y ufw
     ${local.sudo}ufw default deny incoming
     ${local.sudo}ufw default allow outgoing
     ${local.sudo}ufw allow ssh
     echo "y" | ${local.sudo}ufw enable
+    echo "UFW enabled!"
 
     # Configure SSH for extensive port forwarding
     if ! grep -q "^MaxSessions 100" /etc/ssh/sshd_config; then
+      echo "Configuring SSH for extensive port forwarding..."
       echo "MaxSessions 100" | ${local.sudo}tee -a /etc/ssh/sshd_config
+      echo "Restarting SSH daemon..."
       service_cmd restart sshd
+      echo "SSH daemon restarted!"
     fi
 
     # Clone Surge repo
     cd ${local.home_dir}
     if [ ! -d surge-ethereum-package ]; then
-      git clone https://github.com/NethermindEth/surge-ethereum-package.git
+      git clone https://github.com/ensdomains/surge-ethereum-package.git
     fi
     cd surge-ethereum-package
     git fetch origin
     git checkout 94043d085b3365a1fd0f3dd73246bcb826dc9dad
 
+    # Add smart contract verifier env vars to L1 blockscout
+    sed -i '/HTTP_PORT_NUMBER_VERIF/{n;s/)$/),/}' src/blockscout/blockscout_launcher.star
+    sed -i '/^        },/i\            "SMART_CONTRACT_VERIFIER__SOLIDITY__FETCHER__LIST__LIST_URL": "${local.solidity_list_url}",\n            "SMART_CONTRACT_VERIFIER__ZKSYNC_SOLIDITY__EVM_FETCHER__LIST__LIST_URL": "${local.solidity_list_url}",\n            "SMART_CONTRACT_VERIFIER__ZKSYNC_SOLIDITY__ERA_EVM_FETCHER__LIST__LIST_URL": "${local.era_solidity_list_url}",\n            "SMART_CONTRACT_VERIFIER__ZKSYNC_SOLIDITY__ZK_FETCHER__LIST__LIST_URL": "${local.zksolc_list_url}"' src/blockscout/blockscout_launcher.star
+
     # Check if devnet already exists
-    if docker_cmd kurtosis enclave ls 2>/dev/null | grep -q "surge-devnet"; then
+    if ${local.sudo}kurtosis enclave ls 2>/dev/null | grep -q "surge-devnet"; then
+      echo "Surge devnet already exists."
       if [ "${var.redeploy_devnet}" = "true" ]; then
         echo "Removing existing surge-devnet..."
-        docker_cmd ./remove-surge-devnet-l1.sh --force
+        ${local.sudo}./remove-surge-devnet-l1.sh --force
+        echo "Surge devnet removed!"
       else
         echo "Surge devnet already exists. Skipping deployment."
         echo "Set redeploy_devnet=true to redeploy."
@@ -227,12 +264,13 @@ Signed-By: /etc/apt/keyrings/docker.asc" | ${local.sudo}tee /etc/apt/sources.lis
     fi
 
     # Deploy Surge L1
-    docker_cmd ./deploy-surge-devnet-l1.sh --environment remote --mode silence
-
+    echo "Deploying Surge L1..."
+    ${local.sudo}./deploy-surge-devnet-l1.sh --environment remote --mode silence  
     echo "Surge devnet L1 deployment complete!"
 
     # Setup Bonsai Bento
     cd ${local.home_dir}
+    echo "Setting up Bonsai Bento..."
     if [ ! -d risc0-bento ]; then
       git clone https://github.com/NethermindEth/risc0-bento.git
     fi
@@ -242,7 +280,7 @@ Signed-By: /etc/apt/keyrings/docker.asc" | ${local.sudo}tee /etc/apt/sources.lis
     cp bento/dockerfiles/sample.env ./sample.env
     sed -i 's/[0-9]*8081:8081/58081:8081/g' compose.yml
     ${local.sudo}fuser -k 58081/tcp 2>/dev/null || true
-    docker_cmd docker compose --file compose.yml --env-file sample.env up -d --build
+    ${local.sudo}docker compose --file compose.yml --env-file sample.env up -d --build
 
     # Clone simple-surge-node repo for L2 deployment
     cd ${local.home_dir}
@@ -253,15 +291,18 @@ Signed-By: /etc/apt/keyrings/docker.asc" | ${local.sudo}tee /etc/apt/sources.lis
     git fetch origin
     git checkout 5171c3b6528ef686667ad088c90be3a6c8a2a871
 
+    # Add smart contract verifier env vars to L2 blockscout
+    sed -i '/SMART_CONTRACT_VERIFIER__SERVER__HTTP__ADDR/a\      SMART_CONTRACT_VERIFIER__SOLIDITY__FETCHER__LIST__LIST_URL: ${local.solidity_list_url}\n      SMART_CONTRACT_VERIFIER__ZKSYNC_SOLIDITY__EVM_FETCHER__LIST__LIST_URL: ${local.solidity_list_url}\n      SMART_CONTRACT_VERIFIER__ZKSYNC_SOLIDITY__ERA_EVM_FETCHER__LIST__LIST_URL: ${local.era_solidity_list_url}\n      SMART_CONTRACT_VERIFIER__ZKSYNC_SOLIDITY__ZK_FETCHER__LIST__LIST_URL: ${local.zksolc_list_url}' docker-compose.yml
+
     # Clean up any existing L2 deployment
-    docker_cmd ./surge-remover.sh || true
+    ${local.sudo}./surge-remover.sh || true
 
     # Setup environment configuration
     cp .env.devnet .env
     sed -i 's/^POSTGRES_PORT=.*/POSTGRES_PORT=55432/' .env
 
     # Deploy L2 protocol
-    DEPLOYER_OUTPUT=$(printf '\n\n\ntrue\n\n\n\ntrue\n' | docker_cmd ./surge-protocol-deployer.sh 2>&1) || true
+    DEPLOYER_OUTPUT=$(printf '\n\n\ntrue\n\n\n\ntrue\n' | ${local.sudo}./surge-protocol-deployer.sh 2>&1) || true
     echo "$DEPLOYER_OUTPUT"
 
     # Verify expected output
@@ -312,17 +353,17 @@ Signed-By: /etc/apt/keyrings/docker.asc" | ${local.sudo}tee /etc/apt/sources.lis
 
     # Start raiko docker containers
     cd docker
-    docker_cmd docker compose -f docker-compose-zk.yml up -d --force-recreate
+    ${local.sudo}docker compose -f docker-compose-zk.yml up -d --force-recreate
 
     echo "Raiko containers started!"
 
     # Re-run surge-protocol-deployer with raiko endpoints
     cd ${local.home_dir}/simple-surge-node
-    DEPLOYER_OUTPUT2=$(printf '\n\n\ntrue\n\n\nhttp://127.0.0.1:8080\nhttp://127.0.0.1:8080\n\n\n' | docker_cmd ./surge-protocol-deployer.sh 2>&1) || true
+    DEPLOYER_OUTPUT2=$(printf '\n\n\ntrue\n\n\nhttp://127.0.0.1:8080\nhttp://127.0.0.1:8080\n\n\n' | ${local.sudo}./surge-protocol-deployer.sh 2>&1) || true
     echo "$DEPLOYER_OUTPUT2"
 
     # Deploy L2 stack
-    printf '\n\n5\n\n' | docker_cmd ./surge-stack-deployer.sh
+    printf '\n\n5\n\n' | ${local.sudo}./surge-stack-deployer.sh
 
     echo "L2 stack deployment complete!"
 

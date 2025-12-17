@@ -26,6 +26,8 @@ Execute:
 tofu apply -var="server_ip=<ip address of your server>" -auto-approve
 ````
 
+_Note: For debugging set `TF_LOG` env var to `DEBUG` prior to running the script._
+
 When you run this a `ssh.sh` script (bash/zsh) will have been generated. You can use to connect to the server as `root`:
 
 ```bash
