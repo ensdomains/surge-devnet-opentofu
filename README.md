@@ -14,6 +14,14 @@
 
 ## Getting started
 
+### Get Intel Provisioning certificate
+https://api.portal.trustedservices.intel.com/provisioning-certification
+* Goto  and _Subscribe_ to a PCK Certificate
+  * _You will need to sign-in/sign-up to Intel_
+* You should see the _Intel® Software Guard Extensions Provisioning Certification Service_ page - click "Subscribe" at the bottom.
+* Goto _Manage Subscriptions_ (top-right) and copy the primary API key
+  * The active subscription should be for _"Intel® Software Guard Extensions Provisioning Certification Service (Intel SGX PCS)"_.
+
 ### Provisioning Azure server
 
 1. Ensure you have a [local SSH keypair](https://www.ssh.com/academy/ssh/keygen) created.
