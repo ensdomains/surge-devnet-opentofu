@@ -46,6 +46,17 @@
   * Subnet: `(New) default`
     * **VERY IMPORTANT:** _The range shown should be `10.0.0.0 - 10.0.0.255` if you edited the virtual network correctly._
   * Public Inbound Ports: `SSH/RDP`
+1. We need to ensure there is enough disk space for Docker image builds (base OS disk only has 32 GB):
+  * So go to _Azure Portal → your VM → Disks (left sidebar)_:
+    1. Click + Create and attach a new disk
+    1. Configure:
+      * Name: `surge-docker-data`
+      * Storage type: `Premium SSD`
+      * Size: `256 GB`
+      * Host caching: `Read/write`
+    1. Click Save
+  * _Note: Our tofu script will auto-detect any 256 GB disk and mount it for Docker_.
+  
 
 ### Running the script
 

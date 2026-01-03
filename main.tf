@@ -116,6 +116,43 @@ locals {
       fi
     }
 
+    setup_data_disk_for_docker() {
+      DATA_DISK=$(lsblk -b -o NAME,SIZE,TYPE -n | awk '$3=="disk" && $2>240000000000 && $2<280000000000 {print "/dev/"$1; exit}')
+
+      if [ -z "$DATA_DISK" ]; then
+        echo "No 256GB data disk found, skipping data disk setup"
+        return 0
+      fi
+
+      echo "Found data disk: $DATA_DISK"
+
+      if mountpoint -q /mnt/docker-data 2>/dev/null; then
+        echo "Data disk already mounted at /mnt/docker-data"
+        return 0
+      fi
+
+      if ! lsblk -n "$${DATA_DISK}1" > /dev/null 2>&1; then
+        echo "Creating partition on $DATA_DISK..."
+        ${local.sudo}parted "$DATA_DISK" --script mklabel gpt mkpart primary ext4 0% 100%
+        sleep 2
+      fi
+
+      if ! blkid "$${DATA_DISK}1" | grep -q ext4; then
+        echo "Formatting $${DATA_DISK}1..."
+        ${local.sudo}mkfs.ext4 -F "$${DATA_DISK}1"
+      fi
+
+      ${local.sudo}mkdir -p /mnt/docker-data
+      ${local.sudo}mount "$${DATA_DISK}1" /mnt/docker-data
+
+      if ! grep -q "/mnt/docker-data" /etc/fstab; then
+        echo "$${DATA_DISK}1 /mnt/docker-data ext4 defaults,nofail 0 2" | ${local.sudo}tee -a /etc/fstab
+      fi
+
+      ${local.sudo}mkdir -p /mnt/docker-data/docker
+      echo "Data disk setup complete at /mnt/docker-data"
+    }
+
     remove_existing_docker() {
       service_cmd stop docker.socket 2>/dev/null || true
       service_cmd stop docker 2>/dev/null || true
@@ -131,7 +168,10 @@ locals {
 
     # Install dependencies
     apt_get update
-    apt_get install -y -f curl jq git wget net-tools build-essential
+    apt_get install -y -f curl jq git wget net-tools build-essential parted
+
+    # Setup data disk for Docker storage if available
+    setup_data_disk_for_docker
 
     # Docker installation (with cleanup of broken installations)
     if ! ${local.sudo}docker compose version > /dev/null 2>&1; then
@@ -199,12 +239,25 @@ Signed-By: /etc/apt/keyrings/docker.asc" | ${local.sudo}tee /etc/apt/sources.lis
     fi
     ${local.sudo}nvidia-ctk runtime configure --runtime=docker
 
-    # Configure Docker to use IP ranges that don't conflict with Azure VNet (172.16.0.0/24)
+    # Configure Docker daemon with data-root if data disk is mounted
+    DOCKER_DATA_ROOT=""
+    if mountpoint -q /mnt/docker-data 2>/dev/null; then
+      DOCKER_DATA_ROOT="/mnt/docker-data/docker"
+    fi
+
     if [ -f /etc/docker/daemon.json ]; then
-      ${local.sudo}cat /etc/docker/daemon.json | jq '. + {"default-address-pools": [{"base": "10.10.0.0/16", "size": 24}], "bip": "10.20.0.1/16"}' | ${local.sudo}tee /etc/docker/daemon.json.tmp > /dev/null
+      if [ -n "$DOCKER_DATA_ROOT" ]; then
+        ${local.sudo}cat /etc/docker/daemon.json | jq --arg dr "$DOCKER_DATA_ROOT" '. + {"data-root": $dr, "default-address-pools": [{"base": "10.10.0.0/16", "size": 24}], "bip": "10.20.0.1/16"}' | ${local.sudo}tee /etc/docker/daemon.json.tmp > /dev/null
+      else
+        ${local.sudo}cat /etc/docker/daemon.json | jq '. + {"default-address-pools": [{"base": "10.10.0.0/16", "size": 24}], "bip": "10.20.0.1/16"}' | ${local.sudo}tee /etc/docker/daemon.json.tmp > /dev/null
+      fi
       ${local.sudo}mv /etc/docker/daemon.json.tmp /etc/docker/daemon.json
     else
-      echo '{"default-address-pools": [{"base": "10.10.0.0/16", "size": 24}], "bip": "10.20.0.1/16"}' | ${local.sudo}tee /etc/docker/daemon.json > /dev/null
+      if [ -n "$DOCKER_DATA_ROOT" ]; then
+        echo "{\"data-root\": \"$DOCKER_DATA_ROOT\", \"default-address-pools\": [{\"base\": \"10.10.0.0/16\", \"size\": 24}], \"bip\": \"10.20.0.1/16\"}" | ${local.sudo}tee /etc/docker/daemon.json > /dev/null
+      else
+        echo '{"default-address-pools": [{"base": "10.10.0.0/16", "size": 24}], "bip": "10.20.0.1/16"}' | ${local.sudo}tee /etc/docker/daemon.json > /dev/null
+      fi
     fi
 
     echo "Restarting Docker daemon..."  
@@ -276,7 +329,7 @@ Signed-By: /etc/apt/keyrings/docker.asc" | ${local.sudo}tee /etc/apt/sources.lis
 
     # Deploy Surge L1
     echo "Deploying Surge L1..."
-    ${local.sudo}./deploy-surge-devnet-l1.sh --mode silence --environment remote
+    ${local.sudo}./deploy-surge-devnet-l1.sh --mode silence --environment local
     echo "Surge devnet L1 deployment complete!"
 
     # Setup Bonsai Bento
