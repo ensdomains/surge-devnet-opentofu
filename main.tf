@@ -174,10 +174,12 @@ Signed-By: /etc/apt/keyrings/docker.asc" | ${local.sudo}tee /etc/apt/sources.lis
       rm -rf /tmp/cuda
       mkdir -p /tmp/cuda
       cd /tmp/cuda
-      wget -q https://developer.download.nvidia.com/compute/cuda/13.0.1/local_installers/cuda_13.0.1_580.82.07_linux.run
+      wget --progress=dot:giga https://developer.download.nvidia.com/compute/cuda/13.0.1/local_installers/cuda_13.0.1_580.82.07_linux.run
       ${local.sudo}sh cuda_13.0.1_580.82.07_linux.run --silent --toolkit
       rm -rf /tmp/cuda
       echo "CUDA 13.0.1 installed!"
+    else
+      echo "CUDA already installed, skipping..."
     fi
     grep -qxF 'export PATH="/usr/local/cuda/bin:$PATH"' ${local.home_dir}/.profile || echo 'export PATH="/usr/local/cuda/bin:$PATH"' >> ${local.home_dir}/.profile
     grep -qxF 'export LD_LIBRARY_PATH="/usr/local/cuda/lib64:$LD_LIBRARY_PATH"' ${local.home_dir}/.profile || echo 'export LD_LIBRARY_PATH="/usr/local/cuda/lib64:$LD_LIBRARY_PATH"' >> ${local.home_dir}/.profile
@@ -196,6 +198,14 @@ Signed-By: /etc/apt/keyrings/docker.asc" | ${local.sudo}tee /etc/apt/sources.lis
       echo "NVIDIA Container Toolkit installed!"
     fi
     ${local.sudo}nvidia-ctk runtime configure --runtime=docker
+
+    # Configure Docker to use IP ranges that don't conflict with Azure VNet (172.16.0.0/24)
+    if [ -f /etc/docker/daemon.json ]; then
+      ${local.sudo}cat /etc/docker/daemon.json | jq '. + {"default-address-pools": [{"base": "10.10.0.0/16", "size": 24}], "bip": "10.20.0.1/16"}' | ${local.sudo}tee /etc/docker/daemon.json.tmp > /dev/null
+      ${local.sudo}mv /etc/docker/daemon.json.tmp /etc/docker/daemon.json
+    else
+      echo '{"default-address-pools": [{"base": "10.10.0.0/16", "size": 24}], "bip": "10.20.0.1/16"}' | ${local.sudo}tee /etc/docker/daemon.json > /dev/null
+    fi
 
     echo "Restarting Docker daemon..."  
     service_cmd restart docker
@@ -244,9 +254,10 @@ Signed-By: /etc/apt/keyrings/docker.asc" | ${local.sudo}tee /etc/apt/sources.lis
     git fetch origin
     git checkout 94043d085b3365a1fd0f3dd73246bcb826dc9dad
 
-    # Add smart contract verifier env vars to L1 blockscout
-    sed -i '/HTTP_PORT_NUMBER_VERIF/{n;s/)$/),/}' src/blockscout/blockscout_launcher.star
-    sed -i '/^        },/i\            "SMART_CONTRACT_VERIFIER__SOLIDITY__FETCHER__LIST__LIST_URL": "${local.solidity_list_url}",\n            "SMART_CONTRACT_VERIFIER__ZKSYNC_SOLIDITY__EVM_FETCHER__LIST__LIST_URL": "${local.solidity_list_url}",\n            "SMART_CONTRACT_VERIFIER__ZKSYNC_SOLIDITY__ERA_EVM_FETCHER__LIST__LIST_URL": "${local.era_solidity_list_url}",\n            "SMART_CONTRACT_VERIFIER__ZKSYNC_SOLIDITY__ZK_FETCHER__LIST__LIST_URL": "${local.zksolc_list_url}"' src/blockscout/blockscout_launcher.star
+    # Add smart contract verifier env vars to L1 blockscout (idempotent)
+    if ! grep -q "SMART_CONTRACT_VERIFIER__SOLIDITY__FETCHER__LIST__LIST_URL" src/blockscout/blockscout_launcher.star; then
+      sed -i '/HTTP_PORT_NUMBER_VERIF/{n;s|)$|),\n            "SMART_CONTRACT_VERIFIER__SOLIDITY__FETCHER__LIST__LIST_URL": "${local.solidity_list_url}",\n            "SMART_CONTRACT_VERIFIER__ZKSYNC_SOLIDITY__EVM_FETCHER__LIST__LIST_URL": "${local.solidity_list_url}",\n            "SMART_CONTRACT_VERIFIER__ZKSYNC_SOLIDITY__ERA_EVM_FETCHER__LIST__LIST_URL": "${local.era_solidity_list_url}",\n            "SMART_CONTRACT_VERIFIER__ZKSYNC_SOLIDITY__ZK_FETCHER__LIST__LIST_URL": "${local.zksolc_list_url}"|;}' src/blockscout/blockscout_launcher.star
+    fi
 
     # Check if devnet already exists
     if ${local.sudo}kurtosis enclave ls 2>/dev/null | grep -q "surge-devnet"; then
@@ -265,7 +276,7 @@ Signed-By: /etc/apt/keyrings/docker.asc" | ${local.sudo}tee /etc/apt/sources.lis
 
     # Deploy Surge L1
     echo "Deploying Surge L1..."
-    ${local.sudo}./deploy-surge-devnet-l1.sh --environment remote --mode silence  
+    ${local.sudo}./deploy-surge-devnet-l1.sh --mode silence --environment remote
     echo "Surge devnet L1 deployment complete!"
 
     # Setup Bonsai Bento
@@ -291,8 +302,10 @@ Signed-By: /etc/apt/keyrings/docker.asc" | ${local.sudo}tee /etc/apt/sources.lis
     git fetch origin
     git checkout 5171c3b6528ef686667ad088c90be3a6c8a2a871
 
-    # Add smart contract verifier env vars to L2 blockscout
-    sed -i '/SMART_CONTRACT_VERIFIER__SERVER__HTTP__ADDR/a\      SMART_CONTRACT_VERIFIER__SOLIDITY__FETCHER__LIST__LIST_URL: ${local.solidity_list_url}\n      SMART_CONTRACT_VERIFIER__ZKSYNC_SOLIDITY__EVM_FETCHER__LIST__LIST_URL: ${local.solidity_list_url}\n      SMART_CONTRACT_VERIFIER__ZKSYNC_SOLIDITY__ERA_EVM_FETCHER__LIST__LIST_URL: ${local.era_solidity_list_url}\n      SMART_CONTRACT_VERIFIER__ZKSYNC_SOLIDITY__ZK_FETCHER__LIST__LIST_URL: ${local.zksolc_list_url}' docker-compose.yml
+    # Add smart contract verifier env vars to L2 blockscout (idempotent)
+    if ! grep -q "SMART_CONTRACT_VERIFIER__SOLIDITY__FETCHER__LIST__LIST_URL" docker-compose.yml; then
+      sed -i '/SMART_CONTRACT_VERIFIER__SERVER__HTTP__ADDR/a\      SMART_CONTRACT_VERIFIER__SOLIDITY__FETCHER__LIST__LIST_URL: ${local.solidity_list_url}\n      SMART_CONTRACT_VERIFIER__ZKSYNC_SOLIDITY__EVM_FETCHER__LIST__LIST_URL: ${local.solidity_list_url}\n      SMART_CONTRACT_VERIFIER__ZKSYNC_SOLIDITY__ERA_EVM_FETCHER__LIST__LIST_URL: ${local.era_solidity_list_url}\n      SMART_CONTRACT_VERIFIER__ZKSYNC_SOLIDITY__ZK_FETCHER__LIST__LIST_URL: ${local.zksolc_list_url}' docker-compose.yml
+    fi
 
     # Clean up any existing L2 deployment
     ${local.sudo}./surge-remover.sh || true

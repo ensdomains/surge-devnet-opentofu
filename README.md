@@ -14,6 +14,41 @@
 
 ## Getting started
 
+### Provisioning Azure server
+
+1. Ensure you have a [local SSH keypair](https://www.ssh.com/academy/ssh/keygen) created.
+1. Sign up for and/or log into Azure
+1. Goto `Quotas` and request the following limit increases:
+  * _Networking > Public IPv4 Addresses - Basic_ - `20` limit in `Canada Central` region
+  * _Compute > Standard DCSv3 Family vCPUs_ - `4` limit in `Canada Central` region
+1. Create new virtual network (search for _"Virtual Networks"_)
+  * Resource group: `surge` (create new one if it doesn't exist)
+  * Virtual network name: `surge`
+  * Region: `Canada Central`
+  * IP addresses address space: `10.0.0.0/16` with default subnet `10.0.0.0/24`
+1. Create a new VM resource 
+  * Marketplace  item: `Virtual Machines with Confidential App Enclaves`
+  * Subtype: `Create Azure Confidential Computing (Intel SGX VMs)`
+  * Resource group: Create new one
+  * Region: `Canada Central`
+  * Image: `Ubuntu Server 20.04 (Gen 2)`
+  * Virtual Machine name: `accvm`
+  * Username: `surge`
+  * Authentication type: `SSH Public Key`
+  * SSH public key source: `Use existing public key`
+  * SSH public key: _<paste in your local SSH key .pub file contents here>_
+  * Virtual Machine Size: `DC4s_v3`
+  * OS Disk Type: `Premium SSD`
+  * Virtual network: `(New) ...`
+  * **VERY IMPORTANT:** Edit the virtual network and do the following in order to avoid kurtosis issues later on:
+    1. Set address space to `10.0.0.0/24`
+    1. Delete existing subnet and then add a new one (address range should look like `10.0.0.0 - 10.0.0.255`)
+  * Subnet: `(New) default`
+    * **VERY IMPORTANT:** _The range shown should be `10.0.0.0 - 10.0.0.255` if you edited the virtual network correctly._
+  * Public Inbound Ports: `SSH/RDP`
+
+### Running the script
+
 In repo folder:
 
 ```bash
@@ -66,6 +101,18 @@ tofu apply \
   -var="ssh_private_key_path=/path/to/ssh/key"  \
   -var="redeploy_devnet=true"  \
   -auto-approve
+```
+
+For debug logging:
+
+```bash
+export TF_LOG=DEBUG
+tofu apply \
+-var="server_ip=<ip address of your server>"  \
+-var="ssh_user=<username on server>"  \
+-var="ssh_private_key_path=/path/to/ssh/key"  \
+-var="redeploy_devnet=true"  \
+-auto-approve
 ```
 
 ## Developer guide
