@@ -11,35 +11,6 @@ terraform {
   }
 }
 
-variable "server_ip" {
-  description = "Target server IP address"
-  type        = string
-}
-
-variable "ssh_user" {
-  description = "SSH username"
-  type        = string
-  default     = "root"
-}
-
-variable "ssh_private_key_path" {
-  description = "Path to SSH private key"
-  type        = string
-  default     = "~/.ssh/id_rsa"
-}
-
-variable "ssh_port" {
-  description = "SSH port"
-  type        = number
-  default     = 22
-}
-
-variable "redeploy_devnet" {
-  description = "If true, remove and redeploy existing surge-devnet"
-  type        = bool
-  default     = false
-}
-
 locals {
   sudo     = var.ssh_user != "root" ? "sudo " : ""
   home_dir = var.ssh_user == "root" ? "/root" : "/home/${var.ssh_user}"
@@ -48,6 +19,10 @@ locals {
   solidity_list_url     = "https://binaries.soliditylang.org/linux-amd64/list.json"
   era_solidity_list_url = "https://raw.githubusercontent.com/blockscout/solc-bin/main/era-solidity.linux-amd64.list.json"
   zksolc_list_url       = "https://raw.githubusercontent.com/blockscout/solc-bin/main/zksolc.linux-amd64.list.json"
+
+  # Determine prover endpoints for L2 finalization
+  risc_endpoint = local.risc_is_local ? "http://127.0.0.1:8080" : "http://${local.risc_server_ip}:8080"
+  sgx_endpoint  = local.sgx_is_local ? "http://127.0.0.1:8080" : "http://${local.sgx_server_ip}:8080"
 
   setup_script = <<-EOT
     set -e
@@ -200,44 +175,12 @@ Signed-By: /etc/apt/keyrings/docker.asc" | ${local.sudo}tee /etc/apt/sources.lis
       wait_for_docker
     fi
 
-
     # Ensure Docker daemon is running
     echo "Starting Docker daemon..."
     service_cmd start docker
     echo "Waiting for Docker daemon to start..."
     wait_for_docker
     echo "Docker daemon started!"
-
-    # CUDA 13.0.1 installation (conditional)
-    if [ ! -x /usr/local/cuda/bin/nvcc ]; then
-      echo "Installing CUDA 13.0.1..."
-      rm -rf /tmp/cuda
-      mkdir -p /tmp/cuda
-      cd /tmp/cuda
-      wget --progress=dot:giga https://developer.download.nvidia.com/compute/cuda/13.0.1/local_installers/cuda_13.0.1_580.82.07_linux.run
-      ${local.sudo}sh cuda_13.0.1_580.82.07_linux.run --silent --toolkit
-      rm -rf /tmp/cuda
-      echo "CUDA 13.0.1 installed!"
-    else
-      echo "CUDA already installed, skipping..."
-    fi
-    grep -qxF 'export PATH="/usr/local/cuda/bin:$PATH"' ${local.home_dir}/.profile || echo 'export PATH="/usr/local/cuda/bin:$PATH"' >> ${local.home_dir}/.profile
-    grep -qxF 'export LD_LIBRARY_PATH="/usr/local/cuda/lib64:$LD_LIBRARY_PATH"' ${local.home_dir}/.profile || echo 'export LD_LIBRARY_PATH="/usr/local/cuda/lib64:$LD_LIBRARY_PATH"' >> ${local.home_dir}/.profile
-    export PATH="/usr/local/cuda/bin:$PATH"
-    export LD_LIBRARY_PATH="/usr/local/cuda/lib64:$LD_LIBRARY_PATH"
-
-    # NVIDIA Container Toolkit (for Docker GPU support)
-    if ! dpkg -l | grep -q nvidia-container-toolkit; then\
-      echo "Installing NVIDIA Container Toolkit..."
-      curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | ${local.sudo}gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
-      curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list | \
-        sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' | \
-        ${local.sudo}tee /etc/apt/sources.list.d/nvidia-container-toolkit.list
-      apt_get update
-      apt_get install -y nvidia-container-toolkit
-      echo "NVIDIA Container Toolkit installed!"
-    fi
-    ${local.sudo}nvidia-ctk runtime configure --runtime=docker
 
     # Configure Docker daemon with data-root if data disk is mounted
     DOCKER_DATA_ROOT=""
@@ -260,7 +203,7 @@ Signed-By: /etc/apt/keyrings/docker.asc" | ${local.sudo}tee /etc/apt/sources.lis
       fi
     fi
 
-    echo "Restarting Docker daemon..."  
+    echo "Restarting Docker daemon..."
     service_cmd restart docker
     echo "Waiting for Docker daemon to restart..."
     wait_for_docker
@@ -331,20 +274,11 @@ Signed-By: /etc/apt/keyrings/docker.asc" | ${local.sudo}tee /etc/apt/sources.lis
     echo "Deploying Surge L1..."
     ${local.sudo}./deploy-surge-devnet-l1.sh --mode silence --environment local
     echo "Surge devnet L1 deployment complete!"
+  EOT
 
-    # Setup Bonsai Bento
-    cd ${local.home_dir}
-    echo "Setting up Bonsai Bento..."
-    if [ ! -d risc0-bento ]; then
-      git clone https://github.com/NethermindEth/risc0-bento.git
-    fi
-    cd risc0-bento
-    git fetch origin
-    git checkout main
-    cp bento/dockerfiles/sample.env ./sample.env
-    sed -i 's/[0-9]*8081:8081/58081:8081/g' compose.yml
-    ${local.sudo}fuser -k 58081/tcp 2>/dev/null || true
-    ${local.sudo}docker compose --file compose.yml --env-file sample.env up -d --build
+  l2_protocol_first_pass_script = <<-EOT
+    set -e
+    export DEBIAN_FRONTEND=noninteractive
 
     # Clone simple-surge-node repo for L2 deployment
     cd ${local.home_dir}
@@ -367,7 +301,7 @@ Signed-By: /etc/apt/keyrings/docker.asc" | ${local.sudo}tee /etc/apt/sources.lis
     cp .env.devnet .env
     sed -i 's/^POSTGRES_PORT=.*/POSTGRES_PORT=55432/' .env
 
-    # Deploy L2 protocol
+    # Deploy L2 protocol (first pass - without raiko endpoints)
     DEPLOYER_OUTPUT=$(printf '\n\n\ntrue\n\n\n\ntrue\n' | ${local.sudo}./surge-protocol-deployer.sh 2>&1) || true
     echo "$DEPLOYER_OUTPUT"
 
@@ -379,53 +313,19 @@ Signed-By: /etc/apt/keyrings/docker.asc" | ${local.sudo}tee /etc/apt/sources.lis
       exit 1
     fi
 
-    # Extract verifier addresses from L2 deployment
-    RISC0_GROTH16_VERIFIER=$(cat ${local.home_dir}/simple-surge-node/deployment/deploy_l1.json | jq -r '.risc0_groth16_verifier')
-    SP1_RETH_VERIFIER=$(cat ${local.home_dir}/simple-surge-node/deployment/deploy_l1.json | jq -r '.sp1_reth_verifier')
-    echo "Extracted RISC0_GROTH16_VERIFIER: $RISC0_GROTH16_VERIFIER"
-    echo "Extracted SP1_RETH_VERIFIER: $SP1_RETH_VERIFIER"
+    echo "L2 protocol first pass complete"
+  EOT
 
-    # Clone raiko repository
-    RAIKO_TAG="v25.1.0-surge"
-    cd ${local.home_dir}
-    if [ ! -d raiko ]; then
-      git clone https://github.com/NethermindEth/raiko.git
-    fi
-    cd raiko
-    git fetch origin
-    git checkout $RAIKO_TAG
+  l2_finalize_script = <<-EOT
+    set -e
+    export DEBIAN_FRONTEND=noninteractive
 
-    # Copy chain spec config from simple-surge-node to raiko
-    mkdir -p host/config/devnet
-    cp ${local.home_dir}/simple-surge-node/configs/chain_spec_list_default.json host/config/devnet/chain_spec_list.json
-
-    # Setup raiko docker environment
-    cp docker/.env.sample.zk docker/.env
-
-    # Configure environment variables in raiko's .env
-    sed -i "s|^BONSAI_API_URL=.*|BONSAI_API_URL=http://localhost:58081|" docker/.env
-    sed -i "s|^SP1_VERIFIER_ADDRESS=.*|SP1_VERIFIER_ADDRESS=$SP1_RETH_VERIFIER|" docker/.env
-    sed -i "s|^GROTH16_VERIFIER_ADDRESS=.*|GROTH16_VERIFIER_ADDRESS=$RISC0_GROTH16_VERIFIER|" docker/.env
-
-    # Add variables if they don't exist
-    grep -q "^BONSAI_API_URL=" docker/.env || echo "BONSAI_API_URL=http://localhost:58081" >> docker/.env
-    grep -q "^SP1_VERIFIER_ADDRESS=" docker/.env || echo "SP1_VERIFIER_ADDRESS=$SP1_RETH_VERIFIER" >> docker/.env
-    grep -q "^GROTH16_VERIFIER_ADDRESS=" docker/.env || echo "GROTH16_VERIFIER_ADDRESS=$RISC0_GROTH16_VERIFIER" >> docker/.env
-
-    echo "Raiko setup complete!"
-
-    # Update raiko docker image tag (still in raiko directory from previous steps)
-    sed -i "s/:latest/:$RAIKO_TAG/g" docker/docker-compose-zk.yml
-
-    # Start raiko docker containers
-    cd docker
-    ${local.sudo}docker compose -f docker-compose-zk.yml up -d --force-recreate
-
-    echo "Raiko containers started!"
-
-    # Re-run surge-protocol-deployer with raiko endpoints
     cd ${local.home_dir}/simple-surge-node
-    DEPLOYER_OUTPUT2=$(printf '\n\n\ntrue\n\n\nhttp://127.0.0.1:8080\nhttp://127.0.0.1:8080\n\n\n' | ${local.sudo}./surge-protocol-deployer.sh 2>&1) || true
+
+    # Re-run surge-protocol-deployer with prover endpoints
+    echo "Re-running protocol deployer with prover endpoints..."
+    echo "RISC endpoint: ${local.risc_endpoint}"
+    DEPLOYER_OUTPUT2=$(printf '\n\n\ntrue\n\n\n${local.risc_endpoint}\n${local.risc_endpoint}\n\n\n' | ${local.sudo}./surge-protocol-deployer.sh 2>&1) || true
     echo "$DEPLOYER_OUTPUT2"
 
     # Deploy L2 stack
@@ -458,8 +358,78 @@ resource "null_resource" "surge_devnet_l1" {
   }
 }
 
-resource "null_resource" "extract_chain_data" {
+resource "null_resource" "l2_protocol_first_pass" {
   depends_on = [null_resource.surge_devnet_l1]
+
+  triggers = {
+    server_ip = var.server_ip
+  }
+
+  connection {
+    type        = "ssh"
+    user        = var.ssh_user
+    host        = var.server_ip
+    port        = var.ssh_port
+    private_key = file(pathexpand(var.ssh_private_key_path))
+  }
+
+  provisioner "remote-exec" {
+    inline = [local.l2_protocol_first_pass_script]
+  }
+}
+
+# Extract config files from main server to localhost for prover setup
+resource "null_resource" "extract_config_files" {
+  depends_on = [null_resource.l2_protocol_first_pass]
+
+  triggers = {
+    server_ip = var.server_ip
+  }
+
+  provisioner "local-exec" {
+    command = <<-EOT
+      mkdir -p ${path.module}/files
+      scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+        -P ${var.ssh_port} \
+        -i ${var.ssh_private_key_path} \
+        ${var.ssh_user}@${var.server_ip}:${local.home_dir}/simple-surge-node/configs/chain_spec_list_default.json \
+        ${path.module}/files/chain_spec_list.json
+      scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+        -P ${var.ssh_port} \
+        -i ${var.ssh_private_key_path} \
+        ${var.ssh_user}@${var.server_ip}:${local.home_dir}/simple-surge-node/deployment/deploy_l1.json \
+        ${path.module}/files/deploy_l1.json
+      echo "Config files extracted to localhost"
+    EOT
+  }
+}
+
+# Finalize L2 deployment after provers are set up
+resource "null_resource" "finalize_l2_deployment" {
+  depends_on = [
+    null_resource.risc_prover_raiko,
+    null_resource.sgx_prover_raiko
+  ]
+
+  triggers = {
+    server_ip = var.server_ip
+  }
+
+  connection {
+    type        = "ssh"
+    user        = var.ssh_user
+    host        = var.server_ip
+    port        = var.ssh_port
+    private_key = file(pathexpand(var.ssh_private_key_path))
+  }
+
+  provisioner "remote-exec" {
+    inline = [local.l2_finalize_script]
+  }
+}
+
+resource "null_resource" "extract_chain_data" {
+  depends_on = [null_resource.finalize_l2_deployment]
 
   triggers = {
     server_ip = var.server_ip

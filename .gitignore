@@ -6,3 +6,4 @@ ssh.sh
 chaindata.json
 out/
 cache/
+files/
