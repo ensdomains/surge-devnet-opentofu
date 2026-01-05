@@ -96,43 +96,114 @@ To connect and setup a port-forwarding tunnel to all the endpoints of the devnet
 
 Now you can access the Surge devnet L1 and L2 endpoints, see [devnet docs](https://docs.surge.wtf/docs/guides/running-surge).
 
-### Additonal CLI settings
+### CLI Variables
 
-You can override other settings during `tofu apply`:
+#### Main server settings
 
-* SSH username
-  * default is `root`
-  * use `-var="ssh_user=..."`
-* SSH private key path
-  * default is `~/.ssh/id_rsa`
-  * use `-var="ssh_private_key_path=..."`
-* Force-redeploy devnet
-  * default is no
-  * use `-var="redeploy_devnet=true"`
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `server_ip` | Main server IP address (L1/L2 deployment) | **Required** |
+| `ssh_user` | SSH username for main server | `root` |
+| `ssh_private_key_path` | Path to SSH private key (shared across all servers) | `~/.ssh/id_rsa` |
+| `ssh_port` | SSH port | `22` |
+| `redeploy_devnet` | Force remove and redeploy existing devnet | `false` |
 
+#### Prover server settings
 
-For example, if we're using all of the above options:
+Provers can run on separate servers. If not specified, they default to the main server.
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `risc_server_ip` | RISC/ZK prover server IP (requires GPU) | Uses `server_ip` |
+| `risc_ssh_user` | SSH username for RISC prover server | Uses `ssh_user` |
+| `sgx_server_ip` | SGX prover server IP (requires Intel SGX) | Uses `server_ip` |
+| `sgx_ssh_user` | SSH username for SGX prover server | Uses `ssh_user` |
+| `intel_pccs_api_key` | Intel PCCS API key for SGX provisioning | `""` |
+
+### Deployment Examples
+
+#### Single server (all components on one machine)
+
+```bash
+tofu apply -var="server_ip=1.2.3.4" -auto-approve
+```
+
+#### Separate RISC prover server
+
+Deploy L1/L2 on main server, RISC/ZK prover (Bonsai Bento + Raiko) on a GPU server:
 
 ```bash
 tofu apply \
-  -var="server_ip=<ip address of your server>"  \
-  -var="ssh_user=<username on server>"  \
-  -var="ssh_private_key_path=/path/to/ssh/key"  \
-  -var="redeploy_devnet=true"  \
+  -var="server_ip=1.2.3.4" \
+  -var="risc_server_ip=5.6.7.8" \
+  -var="risc_ssh_user=surge" \
   -auto-approve
 ```
 
-For debug logging:
+#### Separate SGX prover server
+
+Deploy L1/L2 on main server, SGX prover on an Azure confidential compute VM:
+
+```bash
+tofu apply \
+  -var="server_ip=1.2.3.4" \
+  -var="sgx_server_ip=9.10.11.12" \
+  -var="sgx_ssh_user=surge" \
+  -var="intel_pccs_api_key=YOUR_INTEL_API_KEY" \
+  -auto-approve
+```
+
+#### All separate servers
+
+Deploy each component on dedicated infrastructure:
+
+```bash
+tofu apply \
+  -var="server_ip=1.2.3.4" \
+  -var="ssh_user=surge" \
+  -var="risc_server_ip=5.6.7.8" \
+  -var="risc_ssh_user=surge" \
+  -var="sgx_server_ip=9.10.11.12" \
+  -var="sgx_ssh_user=surge" \
+  -var="intel_pccs_api_key=YOUR_INTEL_API_KEY" \
+  -auto-approve
+```
+
+#### Force redeploy with custom SSH key
+
+```bash
+tofu apply \
+  -var="server_ip=1.2.3.4" \
+  -var="ssh_user=surge" \
+  -var="ssh_private_key_path=/path/to/ssh/key" \
+  -var="redeploy_devnet=true" \
+  -auto-approve
+```
+
+#### Debug logging
 
 ```bash
 export TF_LOG=DEBUG
-tofu apply \
--var="server_ip=<ip address of your server>"  \
--var="ssh_user=<username on server>"  \
--var="ssh_private_key_path=/path/to/ssh/key"  \
--var="redeploy_devnet=true"  \
--auto-approve
+tofu apply -var="server_ip=1.2.3.4" -auto-approve
 ```
+
+### Architecture
+
+The deployment is split into modular Terraform files:
+
+| File | Description |
+|------|-------------|
+| `main.tf` | L1 devnet, L2 protocol/stack deployment, orchestration |
+| `risc-prover.tf` | CUDA, NVIDIA Container Toolkit, Bonsai Bento, Raiko ZK mode |
+| `sgx-prover.tf` | Intel PCCS setup, Raiko SGX mode |
+| `variables.tf` | All variable definitions |
+
+**Execution flow:**
+1. Main server deploys L1 devnet via Kurtosis
+2. L2 protocol first pass (generates config files)
+3. Config files are downloaded to localhost
+4. RISC and SGX provers are set up (can be on separate servers)
+5. L2 deployment finalized with prover endpoints
 
 ## Developer guide
 
